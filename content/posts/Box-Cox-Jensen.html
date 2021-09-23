@@ -1,0 +1,242 @@
+---
+title: "Log transformation & Jensen's inequality"
+author: "Dima Krasovsky"
+date: 2021-09-12T21:13:14-05:00
+categories: ["R"]
+tags: ["R", "stats"]
+output: html_document
+---
+
+<script src="/rmarkdown-libs/header-attrs/header-attrs.js"></script>
+
+
+<div id="обратная-лог-трансформация" class="section level2">
+<h2>Обратная лог-трансформация</h2>
+<p>Мы все любим нормальное распределение и логарифмирование переменных для нормализации данных. Это сильно упрощает нашу жизнь в мире асимметричных распределений.</p>
+<p>В этой заметке я напомню (прежде всего себе самому) о скрытой опасности подобных удобных трансформаций.</p>
+<p>Давайте сгенерируем некоторые распределенные логнормально данные.</p>
+<pre class="r"><code>mu &lt;- 2
+sigma &lt;- 2
+size &lt;- 500
+
+price &lt;- rlnorm(n = size, 
+  meanlog = mu, 
+  sdlog = sigma) %&gt;% 
+    as_tibble()</code></pre>
+<p>Логарифмирование прекрасно нормализует наши данныe:</p>
+<pre class="r"><code>p1 &lt;- price %&gt;%
+  ggplot(aes(x = value)) +
+  geom_histogram() +
+  geom_vline(xintercept = mean(price$value), color = &#39;blue&#39;) +
+  geom_vline(xintercept = median(price$value), color = &#39;red&#39;)
+
+p2 &lt;- price %&gt;% 
+  ggplot(aes(x = log(value))) +
+  geom_histogram() + 
+  geom_vline(xintercept = mean(log(price$value)), color = &#39;blue&#39;) +
+  geom_vline(xintercept = median(log(price$value)), color = &#39;red&#39;)
+
+p1 + p2</code></pre>
+<p><img src="/posts/Box-Cox-Jensen_files/figure-html/unnamed-chunk-1-1.png" width="672" /></p>
+<p>Но, когда мы решаем использовать полученное среднее из трансформированного распределения, оно обычно смещается при экспонировании. Виной всему неравенство Йенсена, которое возникает при отображении на выпуклую/вогнутую функцию.</p>
+<p><img src="https://raw.githubusercontent.com/lexparsimon/lexparsimon.github.io/master/images/jensen/jensen_eng.jpg" alt="иллюстрация неравенства Йенсена в задаче принятия рисков" />
+Отличная визуализация неравенства Йенсена.<a href="https://raw.githubusercontent.com/lexparsimon/lexparsimon.github.io/master/images/jensen/jensen_eng.jpg" class="uri">https://raw.githubusercontent.com/lexparsimon/lexparsimon.github.io/master/images/jensen/jensen_eng.jpg</a></p>
+<p>Неравенство Йенсена для выпуклой функции (например возведения в степень или экспоненты):
+<span class="math display">\[\varphi \left(\operatorname{E}[X]\right) \leq \operatorname{E} [\varphi\left(X\right)]\]</span></p>
+<p>и для вогнутой функции:
+<span class="math display">\[\varphi \left(\operatorname{E}[X]\right) \geq \operatorname{E} [\varphi\left(X\right)]\]</span></p>
+<p>Как это может выглядеть:</p>
+<p><img src="/posts/Box-Cox-Jensen_files/figure-html/unnamed-chunk-2-1.png" width="672" /></p>
+<p>Сравним истинное матожидание, расчётное среднее из всей выборки, подогнанное методом максимального правдоподобия и трансформированное экспонентой среднее логарифмированных цен.</p>
+<pre class="r"><code>m &lt;- fitdist(price$value, &#39;lnorm&#39;, method = &#39;mle&#39;)
+
+tibble(
+  measure = c(&#39;mean&#39;, &#39;median&#39;),
+  true = c(exp(mu +sigma^2 / 2), mu),
+  estimated = c(mean(price$value), median(price$value)),
+  fitted = c(exp(m$estimate[1] + m$estimate[2]^2 / 2), m$estimate[1]),
+  transformed = c(exp(mean(log(price$value))), 
+                  exp(median(log(price$value))))
+) %&gt;% 
+  mutate(across(where(is.numeric), round, 2))</code></pre>
+<pre><code>## # A tibble: 2 x 5
+##   measure  true estimated fitted transformed
+##   &lt;chr&gt;   &lt;dbl&gt;     &lt;dbl&gt;  &lt;dbl&gt;       &lt;dbl&gt;
+## 1 mean     54.6     47.2    52.7        7.4 
+## 2 median    2        8.07    2          8.07</code></pre>
+<p>В статье ‘Duan N. “Smearing Estimate: A Nonparametric Retransformation Method” (1983)’<a href="https://www.jstor.org/stable/2288126" class="uri">https://www.jstor.org/stable/2288126</a> обсуждается корректировка для обратной трансформации матожидания переменной отклика:</p>
+<p><span class="math display">\[\hat{E}(Y) = \hat{\beta_0^*}e^{\hat{\beta_1}X} e^{\frac{1}{2}\hat{\sigma}^2}\]</span>
+То есть корректировка производится на половину дисперсии согласно формуле матожидания для логнормального распределения: <span class="math display">\[\hat{E}(Y) = \exp{\hat{\mu} + \frac{\hat{\sigma}^2}{2}}\]</span></p>
+<p>Давайте оценим матожидание наших данных согласно этой методике:</p>
+<pre class="r"><code>c(exp({(m$estimate[2]^2)/2 + mean(log(price$value))}), 
+  exp(mu +sigma^2 / 2 )) %&gt;% 
+  `attr&lt;-`(., &#39;names&#39;, c(&#39;smearing_mean&#39;, &#39;true_mean&#39;))</code></pre>
+<pre><code>## smearing_mean     true_mean 
+##      52.67941      54.59815</code></pre>
+<p>Точность результата сопоставима подгонке методом максимального правдоподобия.</p>
+</div>
+<div id="пример-с-регрессией" class="section level2">
+<h2>Пример с регрессией</h2>
+<p>Наиболее частым примером такого смещения может являться регрессия с log-трансформацией. Для примера возьмём данные из пакета <code>AER</code> с ценами домов в канадском городе Виндзор.</p>
+<pre class="r"><code>data(&#39;HousePrices&#39;, package = &#39;AER&#39;)</code></pre>
+<p>Посмотрим распределение признаков в наборе данных.
+Ни одина из случайных величин не распределена нормально. Предположим, что эти величины распределены логнормально.</p>
+<pre class="r"><code>p1 &lt;- select_if(HousePrices, is.numeric) %&gt;% 
+        gather() %&gt;% 
+        ggplot(aes(value)) + 
+          geom_histogram(bins = 10) +
+          facet_wrap(~key, scales = &#39;free_x&#39;) + 
+          labs(title = &#39;Numeric variables&#39;) 
+p1</code></pre>
+<p><img src="/posts/Box-Cox-Jensen_files/figure-html/plot_num_params-1.png" width="672" /></p>
+<pre class="r"><code>p2 &lt;- select_if(HousePrices, is.factor) %&gt;%
+        gather() %&gt;%
+        ggplot(aes(x = value)) +
+          geom_bar() +
+          facet_wrap(~ key, scales = &quot;free_x&quot;) +
+          labs(title = &#39;Categorial variables&#39;)
+p2</code></pre>
+<p><img src="/posts/Box-Cox-Jensen_files/figure-html/plot_fac_params-1.png" width="672" /></p>
+<p>Давайте построим регрессионные модели цены (price) от площади (lotsize) без log-трансформирования и с логарифмированием.</p>
+<pre class="r"><code>model_1 &lt;- lm(formula = price ~ lotsize, data = HousePrices)
+model_2 &lt;- lm(formula = log(price) ~ lotsize, data = HousePrices)</code></pre>
+<p>Оценки модели без трансформации и трансформированной модели:</p>
+<pre class="r"><code>est &lt;- rbind(tidy(summary(model_1)),
+             tidy(summary(model_2)))
+est$model &lt;- c(&#39;ordinary&#39;, &#39;ordinary&#39;, 
+               &#39;level-log&#39;, &#39;level-log&#39;)
+relocate(est, model) %&gt;% 
+  mutate(across(3:5, round, 2)) %&gt;% knitr::kable()</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left">model</th>
+<th align="left">term</th>
+<th align="right">estimate</th>
+<th align="right">std.error</th>
+<th align="right">statistic</th>
+<th align="right">p.value</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">ordinary</td>
+<td align="left">(Intercept)</td>
+<td align="right">34136.19</td>
+<td align="right">2491.06</td>
+<td align="right">13.70</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">ordinary</td>
+<td align="left">lotsize</td>
+<td align="right">6.60</td>
+<td align="right">0.45</td>
+<td align="right">14.80</td>
+<td align="right">0</td>
+</tr>
+<tr class="odd">
+<td align="left">level-log</td>
+<td align="left">(Intercept)</td>
+<td align="right">10.58</td>
+<td align="right">0.03</td>
+<td align="right">306.51</td>
+<td align="right">0</td>
+</tr>
+<tr class="even">
+<td align="left">level-log</td>
+<td align="left">lotsize</td>
+<td align="right">0.00</td>
+<td align="right">0.00</td>
+<td align="right">15.08</td>
+<td align="right">0</td>
+</tr>
+</tbody>
+</table>
+<pre class="r"><code>stats &lt;- rbind(glance(summary(model_1)), 
+               glance(summary(model_2))) %&gt;% as.data.frame()
+rownames(stats) &lt;- c(&#39;ordinary&#39;, 
+                     &#39;level-log&#39;)
+stats %&gt;% knitr::kable()</code></pre>
+<table>
+<thead>
+<tr class="header">
+<th align="left"></th>
+<th align="right">r.squared</th>
+<th align="right">adj.r.squared</th>
+<th align="right">sigma</th>
+<th align="right">statistic</th>
+<th align="right">p.value</th>
+<th align="right">df</th>
+<th align="right">df.residual</th>
+<th align="right">nobs</th>
+</tr>
+</thead>
+<tbody>
+<tr class="odd">
+<td align="left">ordinary</td>
+<td align="right">0.2870770</td>
+<td align="right">0.2857665</td>
+<td align="right">2.256705e+04</td>
+<td align="right">219.0558</td>
+<td align="right">0</td>
+<td align="right">1</td>
+<td align="right">544</td>
+<td align="right">546</td>
+</tr>
+<tr class="even">
+<td align="left">level-log</td>
+<td align="right">0.2947481</td>
+<td align="right">0.2934517</td>
+<td align="right">3.126772e-01</td>
+<td align="right">227.3556</td>
+<td align="right">0</td>
+<td align="right">1</td>
+<td align="right">544</td>
+<td align="right">546</td>
+</tr>
+</tbody>
+</table>
+<p>Построим графики</p>
+<pre class="r"><code>ggplot(HousePrices, aes(lotsize, price)) +
+  
+  geom_point() +
+  
+  geom_smooth(method = &#39;lm&#39;, se = FALSE) + # стандартная линейная модель
+  
+  geom_function(fun = function(x) {        # стандартная экспоненциальная модель
+    exp(model_2$coefficients[1]) * exp(model_2$coefficients[2] * x)
+  }, color = &#39;purple&#39;) +
+  
+  geom_function(fun = function(x) {        # скорректированная экспоненциальная модель
+    exp(model_2$coefficients[1] + model_2$coefficients[2] * x + 0.5 * sigma(model_2)^2) 
+  }, color = &#39;green&#39;) +
+  
+  geom_smooth(method = glm, formula = y ~ x, se = FALSE, # обобщенная линейная модель, оценённая методом максимального правдоподобия
+              method.args = list(family = gaussian(link = &#39;log&#39;)),
+              color = &#39;red&#39;)</code></pre>
+<p><img src="/posts/Box-Cox-Jensen_files/figure-html/unnamed-chunk-9-1.png" width="672" /></p>
+</div>
+<div id="в-заключение" class="section level2">
+<h2>В заключение</h2>
+<p>Несмотря на более чем вековой возраст, неравенство Йенсена в статистике только начало раскрывать свой фундаментальный смысл (с 2017 года активно растёт число научных публикаций в биологических и экологических кругах на эту тему), в экономике (функции полезности), финансах (доходность в условиях риска), маркетинге (определение степени неприятия риска потребителя) и переосмысление его началось “буквально вчера”. Неравенство Йенсена помогает выработать интуицию (что особенно полезно в такой во многом контринтуитивной науке, как теория вероятности) в вероятностных рассуждениях, например при “биективных” нелинейных преобразованиях, принятии решений (оценке “пользы неопределенности” в расчёте рисков), сложных осреднениях величин (например, колмогоровское).</p>
+<p><em>P.S.:</em>
+В статье ‘Miller DM “Reducing Transform Bias in Curve Fitting” (1984)’<a href="https://www.jstor.org/stable/2683247" class="uri">https://www.jstor.org/stable/2683247</a> обсуждается корректировка на обратную трансформацию (или ретрансформацию) для трансформации <code>log-log</code>, а также другие преобразования. В статье Миллера имеется поправка на медиану.</p>
+</div>
+<div id="использованые-источники" class="section level2">
+<h2>Использованые источники:</h2>
+<p>По неравенству (разрыву) Йенсена:</p>
+<ul>
+<li><a href="https://gmarti.gitlab.io/ml/2021/04/10/mind-the-jensen-gap.html" class="uri">https://gmarti.gitlab.io/ml/2021/04/10/mind-the-jensen-gap.html</a></li>
+<li><a href="https://satrialoka.github.io/notes/2020/03/07/Jensen-Inequality.html" class="uri">https://satrialoka.github.io/notes/2020/03/07/Jensen-Inequality.html</a></li>
+</ul>
+<p>По корректировке регрессии:</p>
+<ul>
+<li>Don M. Miller “Reducing Transformation Bias in Curve Fitting” <a href="https://www.jstor.org/stable/2683247" class="uri">https://www.jstor.org/stable/2683247</a></li>
+<li>Naihua Duan “Smearing Estimate: A Nonparametric Retransformation Method” <a href="https://www.jstor.org/stable/2288126" class="uri">https://www.jstor.org/stable/2288126</a></li>
+<li>Michael C. Newman “Regression analysis of log-transformed data: Statistical bias and its correction” <a href="https://setac.onlinelibrary.wiley.com/doi/abs/10.1002/etc.5620120618" class="uri">https://setac.onlinelibrary.wiley.com/doi/abs/10.1002/etc.5620120618</a></li>
+<li>Хорошая визуализация <a href="https://github.com/lexparsimon/lexparsimon.github.io/blob/master/images/jensen/jensen_eng.jpg" class="uri">https://github.com/lexparsimon/lexparsimon.github.io/blob/master/images/jensen/jensen_eng.jpg</a></li>
+</ul>
+<!-- Давайте вспомним функцию плотности логнормального распределения: $$\frac{1}{x\sigma {\sqrt {2\pi}}} \exp \left({\frac {\text{-}\left(\ln x - \mu \right)^{2}}{2\sigma^{2}}}\right)$$ -->
+<!-- и функцию плотности нормального распределения: $$\frac{1}{\sigma\sqrt{2\pi}}\exp \left(\frac{\text{-} \left(x - \mu\right)^2}{2\sigma^2}\right)$$ -->
+</div>
